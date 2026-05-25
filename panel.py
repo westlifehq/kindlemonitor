@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+# Kindle 面板 v1 · 天气日历版 · 标准库 only (Open-Meteo 免 Key 极简版)
+import os
+import json
+import time
+import calendar
+import threading
+import urllib.request
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# Force IPv4 only to bypass broken IPv6 DNS timeouts
+import socket
+orig_getaddrinfo = socket.getaddrinfo
+def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
+    return orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+socket.getaddrinfo = getaddrinfo_ipv4
+
+# ---------- 配置 ----------
+LATITUDE = "31.86"
+LONGITUDE = "117.28"
+PORT = int(os.environ.get("PORT", "8088"))
+REFRESH = int(os.environ.get("WEATHER_REFRESH_SECONDS", "1800"))
+
+WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
+
+# WMO 气象代码对照表 (中文翻译)
+WMO_CODES = {
+    0: "晴",
+    1: "晴", 2: "多云", 3: "阴",
+    45: "大雾", 48: "大雾",
+    51: "毛毛雨", 53: "毛毛雨", 55: "毛毛雨",
+    56: "冻细雨", 57: "冻细雨",
+    61: "小雨", 63: "中雨", 65: "大雨",
+    66: "冻雨", 67: "冻雨",
+    71: "小雪", 73: "中雪", 75: "大雪",
+    77: "雪粒",
+    80: "阵雨", 81: "阵雨", 82: "阵雨",
+    85: "阵雪", 86: "阵雪",
+    95: "雷阵雨", 96: "雷阵雨伴雹", 99: "雷阵雨伴雹"
+}
+
+# ---------- 状态缓存 ----------
+state = {"now": None, "daily": None, "air": None, "updated": None, "error": None}
+lock = threading.Lock()
+
+def fetch_json(url, timeout=10):
+    req = urllib.request.Request(url, headers={"User-Agent": "kindle-panel/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+def kmh_to_wind_scale(kmh):
+    if kmh < 1: return "无风"
+    elif kmh < 6: return "1级"
+    elif kmh < 12: return "2级"
+    elif kmh < 20: return "3级"
+    elif kmh < 29: return "4级"
+    elif kmh < 39: return "5级"
+    elif kmh < 50: return "6级"
+    elif kmh < 62: return "7级"
+    elif kmh < 75: return "8级"
+    else: return "大风"
+
+def degree_to_direction(deg):
+    directions = ["北风", "东北风", "东风", "东南风", "南风", "西南风", "西风", "西北风"]
+    idx = int((deg + 22.5) % 360 / 45)
+    return directions[idx]
+
+def get_aqi_category(aqi):
+    if aqi <= 50: return "优"
+    elif aqi <= 100: return "良"
+    elif aqi <= 150: return "轻度污染"
+    elif aqi <= 200: return "中度污染"
+    elif aqi <= 300: return "重度污染"
+    else: return "严重污染"
+
+def refresh_weather():
+    try:
+        # 1. 抓取实时天气与7天预报
+        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_direction_10m_dominant&timezone=Asia/Shanghai"
+        w_data = fetch_json(weather_url)
+        
+        # 2. 抓取空气质量 AQI
+        aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={LATITUDE}&longitude={LONGITUDE}&current=us_aqi&timezone=Asia/Shanghai"
+        aqi_data = None
+        try:
+            aqi_data = fetch_json(aqi_url)
+        except Exception:
+            pass
+            
+        with lock:
+            state["now"] = w_data.get("current")
+            state["daily"] = w_data.get("daily")
+            state["air"] = aqi_data.get("current") if aqi_data else None
+            state["updated"] = datetime.now().strftime("%H:%M")
+            state["error"] = None
+    except Exception as e:
+        with lock:
+            state["error"] = "获取数据失败：" + str(e)
+
+def refresh_loop():
+    while True:
+        refresh_weather()
+        time.sleep(REFRESH)
+
+# ---------- 渲染 ----------
+def render_calendar_table(today):
+    cal = calendar.Calendar(firstweekday=6)  # 周日为首列
+    rows = []
+    rows.append("<tr>" + "".join("<th>" + w + "</th>" for w in ["日","一","二","三","四","五","六"]) + "</tr>")
+    for week in cal.monthdayscalendar(today.year, today.month):
+        cells = []
+        for day in week:
+            if day == 0:
+                cells.append("<td></td>")
+            elif day == today.day:
+                cells.append('<td class="today">' + str(day) + "</td>")
+            else:
+                cells.append("<td>" + str(day) + "</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    return "\n".join(rows)
+
+def render_daily(daily):
+    if not daily:
+        return "<tr><td colspan='4'>暂无预报数据</td></tr>"
+    out = ""
+    times = daily.get("time", [])
+    codes = daily.get("weather_code", [])
+    t_maxs = daily.get("temperature_2m_max", [])
+    t_mins = daily.get("temperature_2m_min", [])
+    w_speeds = daily.get("wind_speed_10m_max", [])
+    w_dirs = daily.get("wind_direction_10m_dominant", [])
+    
+    for i in range(min(7, len(times))):
+        try:
+            dd = datetime.strptime(times[i], "%Y-%m-%d")
+            if i == 0:
+                label = "今天"
+            elif i == 1:
+                label = "明天"
+            else:
+                label = "周" + WEEKDAY_CN[dd.weekday()]
+            short = dd.strftime("%m.%d")
+        except Exception:
+            label = ""
+            short = times[i]
+            
+        code = codes[i] if i < len(codes) else 0
+        weather_text = WMO_CODES.get(code, "未知")
+        t_max = t_maxs[i] if i < len(t_maxs) else "--"
+        t_min = t_mins[i] if i < len(t_mins) else "--"
+        w_speed = w_speeds[i] if i < len(w_speeds) else 0
+        w_dir = w_dirs[i] if i < len(w_dirs) else 0
+        
+        wind_text = f"{degree_to_direction(w_dir)} {kmh_to_wind_scale(w_speed)}"
+        
+        out += ("<tr>"
+                + "<td class='forecast-date'>" + label + "<br><span class='sub'>" + short + "</span></td>"
+                + "<td>" + weather_text + "</td>"
+                + "<td class='forecast-temp'>" + str(t_min) + "° <span class='sub'>/ " + str(t_max) + "°</span></td>"
+                + "<td class='forecast-wind'>" + wind_text + "</td>"
+                + "</tr>")
+    return out
+
+HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="300">
+<title>Kindle Weather Dashboard</title>
+<style>
+    body {
+      background-color: #ffffff;
+      color: #000000;
+      font-family: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: none;
+      padding: 16px;
+      margin: 0 auto;
+      max-width: 800px;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    
+    /* Header layout using clean Table instead of Flexbox */
+    .header-table {
+      width: 100%;
+      border-bottom: 2px solid #000000;
+      padding-bottom: 8px;
+      margin-bottom: 16px;
+    }
+    .header-table td {
+      border: none;
+      padding: 0;
+      vertical-align: bottom;
+    }
+    .header-date {
+      font-size: 26px;
+      font-weight: bold;
+      letter-spacing: -0.5px;
+    }
+    .header-sub {
+      font-size: 16px;
+      font-weight: bold;
+      margin-top: 4px;
+    }
+    .header-time {
+      font-size: 52px;
+      font-weight: bold;
+      text-align: right;
+      letter-spacing: -2px;
+      line-height: 1.0;
+    }
+
+    /* Kindle Section Border styling */
+    .kindle-section {
+      border: 2px solid #000000;
+      margin-bottom: 20px;
+    }
+    .section-title {
+      background-color: #000000;
+      color: #ffffff;
+      padding: 4px 12px;
+      font-size: 16px;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    
+    /* Current Weather Table Layout */
+    .cur-table {
+      width: 100%;
+    }
+    .cur-table td {
+      padding: 16px;
+      vertical-align: middle;
+    }
+    .cur-temp-cell {
+      width: 40%;
+      font-size: 72px;
+      font-weight: bold;
+      text-align: center;
+      border-right: 2px solid #000000;
+      letter-spacing: -3px;
+    }
+    .cur-details-cell {
+      padding-left: 24px !important;
+    }
+    .cur-title-row {
+      font-size: 28px;
+      font-weight: bold;
+      border-bottom: 2px solid #000000;
+      padding-bottom: 6px;
+      margin-bottom: 8px;
+    }
+    .cur-title-sub {
+      font-size: 18px;
+      font-weight: normal;
+    }
+    .cur-sub-row {
+      font-size: 16px;
+      margin-top: 8px;
+    }
+
+    /* Forecast Table Layout */
+    .forecast-table {
+      width: 100%;
+    }
+    .forecast-table th, .forecast-table td {
+      border-bottom: 2px solid #000000;
+      padding: 10px 16px;
+      font-size: 16px;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .forecast-table th {
+      background-color: #eeeeee;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    .forecast-table tr:last-child td {
+      border-bottom: none;
+    }
+    .forecast-date {
+      font-size: 18px;
+      font-weight: bold;
+      text-align: left !important;
+    }
+    .forecast-date .sub {
+      font-size: 12px;
+      font-weight: normal;
+      color: #333333;
+    }
+    .forecast-temp {
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .forecast-temp .sub {
+      font-size: 16px;
+      font-weight: normal;
+    }
+    .forecast-wind {
+      text-align: right !important;
+    }
+
+    /* Calendar Layout */
+    .cal-table {
+      width: 100%;
+    }
+    .cal-table th, .cal-table td {
+      width: 14.28%;
+      text-align: center;
+      padding: 6px 0;
+      font-size: 15px;
+      border: 1px solid #000000;
+    }
+    .cal-table th {
+      background-color: #eeeeee;
+      font-weight: bold;
+    }
+    .cal-table .today {
+      background-color: #000000;
+      color: #ffffff;
+      font-weight: bold;
+    }
+    
+    .foot {
+      margin-top: 16px;
+      font-size: 11px;
+      color: #555555;
+      text-align: center;
+    }
+    
+    .err {
+      border: 2px solid #000000;
+      background-color: #000000;
+      color: #ffffff;
+      padding: 8px 12px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      font-weight: bold;
+    }
+</style>
+</head>
+<body>
+<table class="header-table">
+  <tr>
+    <td>
+      <div class="header-date">__DATE__</div>
+      <div class="header-sub">__WEEKDAY__ · 合肥包河</div>
+    </td>
+    <td class="header-time">__TIME__</td>
+  </tr>
+</table>
+
+__ERROR_BLOCK__
+
+<div class="kindle-section">
+  <div class="section-title">当前天气</div>
+  <table class="cur-table">
+    <tr>
+      <td class="cur-temp-cell">__TEMP__°</td>
+      <td class="cur-details-cell">
+        <div class="cur-title-row">__TEXT__ <span class="cur-title-sub">· 体感 __FEELS__°</span></div>
+        <div class="cur-sub-row">湿度 __HUMID__% · __WIND__ · 空气 __AQI__ __AQI_CAT__</div>
+      </td>
+    </tr>
+  </table>
+</div>
+
+<div class="kindle-section">
+  <div class="section-title">未来 7 天</div>
+  <table class="forecast-table">
+    __DAILY_ROWS__
+  </table>
+</div>
+
+<div class="kindle-section">
+  <div class="section-title">__MONTH__</div>
+  <table class="cal-table">
+    __CAL__
+  </table>
+</div>
+
+<div class="foot">天气更新 __UPDATED__ · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo</div>
+</body>
+</html>"""
+
+def render_page():
+    now_dt = datetime.now()
+    weekday_cn = WEEKDAY_CN[now_dt.weekday()]
+    with lock:
+        s_now = state["now"]
+        s_daily = state["daily"]
+        s_air = state["air"]
+        s_updated = state["updated"] or "未获取"
+        s_error = state["error"]
+
+    if s_now:
+        cur_temp = s_now.get("temperature_2m", "--")
+        code = s_now.get("weather_code", 0)
+        cur_text = WMO_CODES.get(code, "未知")
+        cur_humid = s_now.get("relative_humidity_2m", "--")
+        cur_feels = s_now.get("apparent_temperature", "--")
+        
+        w_speed = s_now.get("wind_speed_10m", 0)
+        w_dir = s_now.get("wind_direction_10m", 0)
+        cur_wind = f"{degree_to_direction(w_dir)} {kmh_to_wind_scale(w_speed)}"
+    else:
+        cur_temp = cur_text = cur_humid = cur_feels = "--"
+        cur_wind = "--"
+
+    if s_air:
+        aqi = int(s_air.get("us_aqi", 0))
+        aqi_cat = get_aqi_category(aqi)
+    else:
+        aqi = "--"
+        aqi_cat = ""
+
+    daily_rows = render_daily(s_daily) if s_daily else "<tr><td colspan='4'>预报数据未加载</td></tr>"
+    cal_html = render_calendar_table(now_dt)
+    err_block = ""
+    if s_error:
+        err_block = '<div class="err">数据异常：' + s_error + "</div>"
+
+    html = (HTML
+        .replace("__DATE__", now_dt.strftime("%Y年%m月%d日"))
+        .replace("__WEEKDAY__", "星期" + weekday_cn)
+        .replace("__TIME__", now_dt.strftime("%H:%M"))
+        .replace("__TEMP__", str(cur_temp))
+        .replace("__TEXT__", str(cur_text))
+        .replace("__HUMID__", str(cur_humid))
+        .replace("__FEELS__", str(cur_feels))
+        .replace("__WIND__", str(cur_wind))
+        .replace("__AQI__", str(aqi))
+        .replace("__AQI_CAT__", str(aqi_cat))
+        .replace("__DAILY_ROWS__", daily_rows)
+        .replace("__CAL__", cal_html)
+        .replace("__MONTH__", str(now_dt.year) + "年" + str(now_dt.month) + "月")
+        .replace("__UPDATED__", s_updated)
+        .replace("__ERROR_BLOCK__", err_block))
+    return html
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = render_page().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, fmt, *args):
+        print(self.address_string(), self.command, self.path)
+
+if __name__ == "__main__":
+    t = threading.Thread(target=refresh_loop, daemon=True)
+    t.start()
+    print("Kindle 面板 v1 启动：http://0.0.0.0:" + str(PORT) + "/")
+    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

@@ -1,0 +1,17 @@
+[Unit]
+Description=Kindle Panel v1 (Weather + Calendar)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/vol1/@appdata/kindle-panel
+EnvironmentFile=/vol1/@appdata/kindle-panel/.env
+ExecStart=/usr/bin/python3 /vol1/@appdata/kindle-panel/panel.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/vol1/@appdata/kindle-panel/panel.log
+StandardError=append:/vol1/@appdata/kindle-panel/panel.log
+
+[Install]
+WantedBy=multi-user.target
