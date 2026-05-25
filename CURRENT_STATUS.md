@@ -14,6 +14,8 @@
   * **Redmi AX6S Router Clients**: Updated every **5 seconds** by dynamically authenticating to the router API (`192.168.31.1`) and parsing the online `2.4G` and `5G` device lists.
   * **Instant Page Load**: Decoupled PVE and router fetching from browser loading, caching everything in memory to achieve **sub-1ms instant HTTP responses** with zero browser load lag.
 * **Dual-Column E-Ink Aesthetic Grid**: Narrowed the weather forecast table and introduced a side-by-side FlyOS performance card in a responsive dual-column grid (49% Weather : 2% Gap : 49% FlyOS). Height is perfectly balanced and aligned (symmetric 7 rows each) ensuring absolute compatibility on older Kindle E-ink browsers without Flexbox support.
+* **Lightweight AJAX Real-Time Polling**: Built a `/api/status` high-performance JSON endpoint combined with a zero-dependency front-end `XMLHttpRequest` AJAX script to smoothly auto-refresh time, network client counts, FlyOS performance stats, and PVE VM lists every **2 seconds** without triggering full-page E-ink flashes.
+* **Strict Credentials Decoupling & Git Scrubbing**: Fully abstracted all raw host IPs, PVE credentials, and router keys into an ignored local `.env` configuration file loaded dynamically at boot. Conducted an automated `git filter-branch` tree-rewrite to completely scrub hardcoded passwords from the entire Git commit history, securing the public GitHub repository against any secrets leakage.
 
 ## Active Blockades
 * None. The current system is fully operational, stable, and verified.
