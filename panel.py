@@ -555,7 +555,7 @@ HTML = """<!doctype html>
       color: #000000;
       font-family: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Microsoft YaHei", sans-serif;
       -webkit-font-smoothing: none;
-      padding: 16px;
+      padding: 6px 12px;
       margin: 0 auto;
       max-width: 800px;
     }
@@ -569,8 +569,8 @@ HTML = """<!doctype html>
     .header-table {
       width: 100%;
       border-bottom: 2px solid #000000;
-      padding-bottom: 8px;
-      margin-bottom: 16px;
+      padding-bottom: 4px;
+      margin-bottom: 8px;
     }
     .header-table td {
       border: none;
@@ -578,17 +578,17 @@ HTML = """<!doctype html>
       vertical-align: bottom;
     }
     .header-date {
-      font-size: 26px;
+      font-size: 22px;
       font-weight: bold;
       letter-spacing: -0.5px;
     }
     .header-sub {
-      font-size: 16px;
+      font-size: 14px;
       font-weight: bold;
-      margin-top: 4px;
+      margin-top: 2px;
     }
     .header-time {
-      font-size: 52px;
+      font-size: 42px;
       font-weight: bold;
       text-align: right;
       letter-spacing: -2px;
@@ -598,13 +598,13 @@ HTML = """<!doctype html>
     /* Kindle Section Border styling */
     .kindle-section {
       border: 2px solid #000000;
-      margin-bottom: 20px;
+      margin-bottom: 12px;
     }
     .section-title {
       background-color: #000000;
       color: #ffffff;
-      padding: 4px 12px;
-      font-size: 16px;
+      padding: 3px 12px;
+      font-size: 14px;
       font-weight: bold;
       letter-spacing: 1px;
     }
@@ -614,34 +614,34 @@ HTML = """<!doctype html>
       width: 100%;
     }
     .cur-table td {
-      padding: 16px;
+      padding: 8px 12px;
       vertical-align: middle;
     }
     .cur-temp-cell {
-      width: 40%;
-      font-size: 72px;
+      width: 35%;
+      font-size: 54px;
       font-weight: bold;
       text-align: center;
       border-right: 2px solid #000000;
       letter-spacing: -3px;
     }
     .cur-details-cell {
-      padding-left: 24px !important;
+      padding-left: 12px !important;
     }
     .cur-title-row {
-      font-size: 28px;
+      font-size: 20px;
       font-weight: bold;
       border-bottom: 2px solid #000000;
-      padding-bottom: 6px;
-      margin-bottom: 8px;
+      padding-bottom: 2px;
+      margin-bottom: 4px;
     }
     .cur-title-sub {
-      font-size: 18px;
+      font-size: 14px;
       font-weight: normal;
     }
     .cur-sub-row {
-      font-size: 16px;
-      margin-top: 8px;
+      font-size: 13px;
+      margin-top: 4px;
     }
 
     /* Forecast Table Layout */
@@ -650,38 +650,39 @@ HTML = """<!doctype html>
     }
     .forecast-table th, .forecast-table td {
       border-bottom: 2px solid #000000;
-      padding: 10px 6px;
-      font-size: 16px;
+      padding: 5px 4px;
+      font-size: 15px;
+      line-height: 1.2;
       text-align: center;
       vertical-align: middle;
     }
     .forecast-table th {
       background-color: #eeeeee;
       font-weight: bold;
-      font-size: 14px;
+      font-size: 13px;
     }
     .forecast-table tr:last-child td {
       border-bottom: none;
     }
     .forecast-date {
-      font-size: 18px;
+      font-size: 16px;
       font-weight: bold;
       text-align: left !important;
       white-space: nowrap;
     }
     .forecast-date .sub {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: normal;
       color: #333333;
     }
     .forecast-temp {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: bold;
       white-space: nowrap;
       text-align: right !important;
     }
     .forecast-temp .sub {
-      font-size: 14px;
+      font-size: 13px;
       font-weight: normal;
     }
     .forecast-wind {
@@ -690,8 +691,8 @@ HTML = """<!doctype html>
     }
     
     .foot {
-      margin-top: 16px;
-      font-size: 11px;
+      margin-top: 8px;
+      font-size: 10px;
       color: #555555;
       text-align: center;
     }
