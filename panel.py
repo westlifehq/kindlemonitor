@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-# Kindle 面板 v1 · 天气日历版 · 标准库 only (Open-Meteo 免 Key 极简版)
+# Kindle 面板 v1 · 天气与 PVE 状态版 · 标准库 only (Open-Meteo 免 Key 极简版)
 import os
 import json
 import time
+import ssl
 import calendar
 import threading
 import urllib.request
+import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -41,7 +43,7 @@ WMO_CODES = {
 }
 
 # ---------- 状态缓存 ----------
-state = {"now": None, "daily": None, "air": None, "updated": None, "error": None}
+state = {"now": None, "daily": None, "air": None, "pve_rows": None, "updated": None, "error": None}
 lock = threading.Lock()
 
 def fetch_json(url, timeout=10):
@@ -74,6 +76,83 @@ def get_aqi_category(aqi):
     elif aqi <= 300: return "重度污染"
     else: return "严重污染"
 
+def fetch_pve_status():
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    
+    try:
+        # 1. 登录 PVE 获取 ticket
+        login_url = "https://192.168.31.200:8006/api2/json/access/ticket"
+        data = urllib.parse.urlencode({'username': 'root@pam', 'password': 'your_password'}).encode('utf-8')
+        req = urllib.request.Request(login_url, data=data, method='POST')
+        
+        with urllib.request.urlopen(req, context=ctx, timeout=5) as r:
+            resp = json.loads(r.read().decode('utf-8'))
+            ticket = resp['data']['ticket']
+            
+        # 2. 获取资源列表
+        res_url = "https://192.168.31.200:8006/api2/json/cluster/resources"
+        req_res = urllib.request.Request(res_url)
+        req_res.add_header('Cookie', f'PVEAuthCookie={ticket}')
+        
+        with urllib.request.urlopen(req_res, context=ctx, timeout=5) as r:
+            resp_res = json.loads(r.read().decode('utf-8'))
+            items = resp_res['data']
+            
+        # 3. 格式化为 HTML
+        rows = []
+        res_dict = {}
+        for item in items:
+            t = item.get('type')
+            if t == 'node' and item.get('node') == 'pve':
+                res_dict['pve'] = item
+            elif t == 'qemu' and item.get('vmid') in [101, 102]:
+                res_dict[item.get('vmid')] = item
+                
+        targets = [('pve', '主机 (pve)'), (101, '101 (fnos)'), (102, '102 (istoreos)')]
+        for key, display_name in targets:
+            item = res_dict.get(key)
+            if not item:
+                rows.append(f"<tr><td class='forecast-date'>{display_name}</td><td colspan='4'>未获取到数据</td></tr>")
+                continue
+                
+            uptime_secs = item.get('uptime', 0)
+            uptime_str = "--"
+            if uptime_secs:
+                days = uptime_secs // 86400
+                hours = (uptime_secs % 86400) // 3600
+                mins = (uptime_secs % 3600) // 60
+                if days > 0:
+                    uptime_str = f"{days}天 {hours:02d}:{mins:02d}"
+                else:
+                    uptime_str = f"{hours:02d}:{mins:02d}"
+                    
+            disk = item.get('disk', 0)
+            maxdisk = item.get('maxdisk', 0)
+            disk_pct = f"{disk / maxdisk * 100:.1f}%" if maxdisk else "0.0%"
+            
+            mem = item.get('mem', 0)
+            maxmem = item.get('maxmem', 0)
+            mem_pct = f"{mem / maxmem * 100:.1f}%" if maxmem else "0.0%"
+            
+            cpu = item.get('cpu', 0)
+            cpu_pct = f"{cpu * 100:.1f}%" if cpu else "0.0%"
+            
+            rows.append(
+                f"<tr>"
+                f"<td class='forecast-date'>{display_name}</td>"
+                f"<td>{disk_pct}</td>"
+                f"<td>{mem_pct}</td>"
+                f"<td>{cpu_pct}</td>"
+                f"<td class='forecast-wind'>{uptime_str}</td>"
+                f"</tr>"
+            )
+            
+        return "\n".join(rows)
+    except Exception as e:
+        return f"<tr><td class='forecast-date' colspan='5'>获取 PVE 状态失败: {str(e)}</td></tr>"
+
 def refresh_weather():
     try:
         # 1. 抓取实时天气与7天预报
@@ -88,10 +167,14 @@ def refresh_weather():
         except Exception:
             pass
             
+        # 3. 抓取 PVE 状态
+        pve_html = fetch_pve_status()
+            
         with lock:
             state["now"] = w_data.get("current")
             state["daily"] = w_data.get("daily")
             state["air"] = aqi_data.get("current") if aqi_data else None
+            state["pve_rows"] = pve_html
             state["updated"] = datetime.now().strftime("%H:%M")
             state["error"] = None
     except Exception as e:
@@ -102,23 +185,6 @@ def refresh_loop():
     while True:
         refresh_weather()
         time.sleep(REFRESH)
-
-# ---------- 渲染 ----------
-def render_calendar_table(today):
-    cal = calendar.Calendar(firstweekday=6)  # 周日为首列
-    rows = []
-    rows.append("<tr>" + "".join("<th>" + w + "</th>" for w in ["日","一","二","三","四","五","六"]) + "</tr>")
-    for week in cal.monthdayscalendar(today.year, today.month):
-        cells = []
-        for day in week:
-            if day == 0:
-                cells.append("<td></td>")
-            elif day == today.day:
-                cells.append('<td class="today">' + str(day) + "</td>")
-            else:
-                cells.append("<td>" + str(day) + "</td>")
-        rows.append("<tr>" + "".join(cells) + "</tr>")
-    return "\n".join(rows)
 
 def render_daily(daily):
     if not daily:
@@ -168,7 +234,7 @@ HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="300">
-<title>Kindle Weather Dashboard</title>
+<title>Kindle Weather & PVE Dashboard</title>
 <style>
     body {
       background-color: #ffffff;
@@ -304,27 +370,6 @@ HTML = """<!doctype html>
     .forecast-wind {
       text-align: right !important;
     }
-
-    /* Calendar Layout */
-    .cal-table {
-      width: 100%;
-    }
-    .cal-table th, .cal-table td {
-      width: 14.28%;
-      text-align: center;
-      padding: 6px 0;
-      font-size: 15px;
-      border: 1px solid #000000;
-    }
-    .cal-table th {
-      background-color: #eeeeee;
-      font-weight: bold;
-    }
-    .cal-table .today {
-      background-color: #000000;
-      color: #ffffff;
-      font-weight: bold;
-    }
     
     .foot {
       margin-top: 16px;
@@ -378,13 +423,20 @@ __ERROR_BLOCK__
 </div>
 
 <div class="kindle-section">
-  <div class="section-title">__MONTH__</div>
-  <table class="cal-table">
-    __CAL__
+  <div class="section-title">系统状态 (PVE & 虚拟机)</div>
+  <table class="forecast-table">
+    <tr>
+      <th style="text-align:left;">说明</th>
+      <th>磁盘使用率</th>
+      <th>内存使用率</th>
+      <th>CPU 利用率</th>
+      <th style="text-align:right;">运行时间</th>
+    </tr>
+    __PVE_ROWS__
   </table>
 </div>
 
-<div class="foot">天气更新 __UPDATED__ · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo</div>
+<div class="foot">数据更新 __UPDATED__ · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo & PVE</div>
 </body>
 </html>"""
 
@@ -395,6 +447,7 @@ def render_page():
         s_now = state["now"]
         s_daily = state["daily"]
         s_air = state["air"]
+        s_pve = state["pve_rows"]
         s_updated = state["updated"] or "未获取"
         s_error = state["error"]
 
@@ -420,7 +473,7 @@ def render_page():
         aqi_cat = ""
 
     daily_rows = render_daily(s_daily) if s_daily else "<tr><td colspan='4'>预报数据未加载</td></tr>"
-    cal_html = render_calendar_table(now_dt)
+    pve_rows = s_pve if s_pve else "<tr><td colspan='5'>PVE 状态数据未加载</td></tr>"
     err_block = ""
     if s_error:
         err_block = '<div class="err">数据异常：' + s_error + "</div>"
@@ -437,8 +490,7 @@ def render_page():
         .replace("__AQI__", str(aqi))
         .replace("__AQI_CAT__", str(aqi_cat))
         .replace("__DAILY_ROWS__", daily_rows)
-        .replace("__CAL__", cal_html)
-        .replace("__MONTH__", str(now_dt.year) + "年" + str(now_dt.month) + "月")
+        .replace("__PVE_ROWS__", pve_rows)
         .replace("__UPDATED__", s_updated)
         .replace("__ERROR_BLOCK__", err_block))
     return html
