@@ -25,3 +25,9 @@
   * **PVE Node & VM**: Polled every **1 second** using PVE auth token caching and 401 error auto-refresh, preventing login logs pollution.
   * **Redmi AX6S Router**: Polled every **5 seconds** by obtaining the MAC address via ARP table (`ip neigh show`), logging in using a nested SHA1 signature, and calling `misystem/devicelist` to separate online client counts (`type 1` for 2.4G, `type 2` for 5G).
   * **Memory Cache & Instant Load**: Discarded on-the-fly requests blocking. The HTTP server now serves purely cached states, completing page loads under **1 millisecond** while guaranteeing 1-second status precision.
+
+## 7. Zero-Dependency FlyOS ProcFS Parsing & Symmetric Dual-Column Layout
+* **Decision**: Designed a pure-Python parser for FlyOS `/proc` files alongside an E-ink friendly dual-column table structure:
+  * **Direct ProcFS Access**: Read `/proc/uptime`, `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, and `/proc/diskstats` directly in the 1-second local thread to calculate uptime, CPU usage, RAM size, I/O rates, and interface speed without calling external commands (e.g. `top`, `free`, `iostat`).
+  * **Symmetric Height Aligning**: Narrowed the weather forecast to 50% width and placed it side-by-side with the FlyOS performance card. To eliminate typical browser vertical alignment glitches, we designed both panels to render exactly **7 rows of data**, creating a perfect, balanced, E-ink aesthetic look.
+

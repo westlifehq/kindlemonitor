@@ -48,6 +48,7 @@ state = {
     "daily": None, 
     "air": None, 
     "pve_rows": "<tr><td colspan='5'>正在获取系统状态...</td></tr>", 
+    "fn_rows": "<tr><td colspan='2'>正在获取系统状态...</td></tr>", 
     "wifi_2g": "--",
     "wifi_5g": "--",
     "updated": "未获取", 
@@ -233,6 +234,204 @@ def fetch_router_status():
         router_stok = None
         return {"2g": "--", "5g": "--"}
 
+# ---------- 飞牛 OS 本地性能指标采集 ----------
+fn_prev_cpu_total = 0
+fn_prev_cpu_idle = 0
+fn_prev_net_time = 0
+fn_prev_net_rx = 0
+fn_prev_net_tx = 0
+fn_prev_io_time = 0
+fn_prev_io_read = 0
+fn_prev_io_write = 0
+
+def fn_format_speed(bytes_per_sec):
+    if bytes_per_sec < 1024:
+        return f"{bytes_per_sec:.1f} B/s"
+    elif bytes_per_sec < 1024 * 1024:
+        return f"{bytes_per_sec / 1024:.1f} KB/s"
+    else:
+        return f"{bytes_per_sec / 1024 / 1024:.1f} MB/s"
+
+def fn_get_uptime():
+    try:
+        with open("/proc/uptime", "r") as f:
+            uptime_seconds = float(f.readline().split()[0])
+        days = int(uptime_seconds // 86400)
+        hours = int((uptime_seconds % 86400) // 3600)
+        minutes = int((uptime_seconds % 3600) // 60)
+        if days > 0:
+            return f"{days}天 {hours}小时 {minutes}分"
+        else:
+            return f"{hours}小时 {minutes}分"
+    except Exception:
+        return "--"
+
+def fn_get_cpu_usage():
+    global fn_prev_cpu_total, fn_prev_cpu_idle
+    try:
+        with open("/proc/stat", "r") as f:
+            line = f.readline()
+        if not line.startswith("cpu"):
+            return 0.0
+        parts = [float(x) for x in line.split()[1:]]
+        total = sum(parts)
+        idle = parts[3] + parts[4]
+        
+        if fn_prev_cpu_total == 0:
+            fn_prev_cpu_total = total
+            fn_prev_cpu_idle = idle
+            return 0.0
+            
+        total_delta = total - fn_prev_cpu_total
+        idle_delta = idle - fn_prev_cpu_idle
+        
+        fn_prev_cpu_total = total
+        fn_prev_cpu_idle = idle
+        
+        if total_delta <= 0:
+            return 0.0
+        return (1.0 - idle_delta / total_delta) * 100
+    except Exception:
+        return 0.0
+
+def fn_get_mem_usage():
+    try:
+        mem_total = 0
+        mem_avail = 0
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    mem_total = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    mem_avail = int(line.split()[1])
+        if mem_total == 0:
+            return "--", "--"
+        used = mem_total - mem_avail
+        used_gb = used / 1024 / 1024
+        pct = (used / mem_total) * 100
+        return f"{used_gb:.2f} GB", f"{pct:.1f}%"
+    except Exception:
+        return "--", "--"
+
+def fn_get_net_speed():
+    global fn_prev_net_time, fn_prev_net_rx, fn_prev_net_tx
+    try:
+        now_time = time.time()
+        rx_bytes = 0
+        tx_bytes = 0
+        with open("/proc/net/dev", "r") as f:
+            lines = f.readlines()
+        for line in lines[2:]:
+            parts = line.split()
+            if len(parts) < 17:
+                continue
+            iface = parts[0].strip(":")
+            if iface == "lo" or iface.startswith("veth") or iface.startswith("docker") or iface.startswith("br-"):
+                continue
+            rx_bytes += int(parts[1])
+            tx_bytes += int(parts[9])
+            
+        if fn_prev_net_time == 0:
+            fn_prev_net_time = now_time
+            fn_prev_net_rx = rx_bytes
+            fn_prev_net_tx = tx_bytes
+            return 0.0, 0.0
+            
+        dt = now_time - fn_prev_net_time
+        if dt <= 0:
+            dt = 1.0
+            
+        rx_speed = (rx_bytes - fn_prev_net_rx) / dt
+        tx_speed = (tx_bytes - fn_prev_net_tx) / dt
+        
+        fn_prev_net_time = now_time
+        fn_prev_net_rx = rx_bytes
+        fn_prev_net_tx = tx_bytes
+        
+        return rx_speed, tx_speed
+    except Exception:
+        return 0.0, 0.0
+
+def fn_get_disk_speed():
+    global fn_prev_io_time, fn_prev_io_read, fn_prev_io_write
+    try:
+        now_time = time.time()
+        read_sectors = 0
+        write_sectors = 0
+        with open("/proc/diskstats", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 14:
+                    continue
+                dev = parts[2]
+                is_disk = False
+                if dev.startswith("sd") and not dev[-1].isdigit():
+                    is_disk = True
+                elif dev.startswith("vd") and not dev[-1].isdigit():
+                    is_disk = True
+                elif dev.startswith("nvme") and "p" not in dev:
+                    is_disk = True
+                if is_disk:
+                    read_sectors += int(parts[5])
+                    write_sectors += int(parts[9])
+                    
+        read_bytes = read_sectors * 512
+        write_bytes = write_sectors * 512
+        
+        if fn_prev_io_time == 0:
+            fn_prev_io_time = now_time
+            fn_prev_io_read = read_bytes
+            fn_prev_io_write = write_bytes
+            return 0.0, 0.0
+            
+        dt = now_time - fn_prev_io_time
+        if dt <= 0:
+            dt = 1.0
+            
+        r_speed = (read_bytes - fn_prev_io_read) / dt
+        w_speed = (write_bytes - fn_prev_io_write) / dt
+        
+        fn_prev_io_time = now_time
+        fn_prev_io_read = read_bytes
+        fn_prev_io_write = write_bytes
+        
+        return r_speed, w_speed
+    except Exception:
+        return 0.0, 0.0
+
+def fetch_fnos_status_html():
+    uptime_str = fn_get_uptime()
+    cpu_usage = fn_get_cpu_usage()
+    mem_used, mem_pct = fn_get_mem_usage()
+    rx, tx = fn_get_net_speed()
+    disk_r, disk_w = fn_get_disk_speed()
+    
+    import socket
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        hostname = "fnos"
+        
+    metrics = [
+        ("系统说明", f"飞牛 OS ({hostname})"),
+        ("运行时间", uptime_str),
+        ("CPU 利用率", f"{cpu_usage:.1f}%"),
+        ("内存已用", f"{mem_used} ({mem_pct})"),
+        ("网络上行", f"↑ {fn_format_speed(tx)}"),
+        ("网络下行", f"↓ {fn_format_speed(rx)}"),
+        ("硬盘速度", f"读 {fn_format_speed(disk_r)} · 写 {fn_format_speed(disk_w)}"),
+    ]
+    
+    rows = []
+    for label, val in metrics:
+        rows.append(
+            f"<tr>"
+            f"<td class='forecast-date'>{label}</td>"
+            f"<td class='forecast-wind'>{val}</td>"
+            f"</tr>"
+        )
+    return "\n".join(rows)
+
 # ---------- 定时轮询线程 ----------
 def weather_refresh_loop():
     while True:
@@ -264,11 +463,13 @@ def local_status_refresh_loop():
     pve_counter = 0
     router_counter = 0
     while True:
-        # PVE 状态：每 1 秒在后台抓取更新一次
+        # PVE & 飞牛状态：每 1 秒在后台抓取更新一次
         if pve_counter >= 1:
             pve_html = fetch_pve_status()
+            fn_html = fetch_fnos_status_html()
             with lock:
                 state["pve_rows"] = pve_html
+                state["fn_rows"] = fn_html
             pve_counter = 0
             
         # 路由器设备数量：每 5 秒在后台抓取更新一次
@@ -285,14 +486,12 @@ def local_status_refresh_loop():
 
 def render_daily(daily):
     if not daily:
-        return "<tr><td colspan='4'>暂无预报数据</td></tr>"
+        return "<tr><td colspan='3'>暂无预报数据</td></tr>"
     out = ""
     times = daily.get("time", [])
     codes = daily.get("weather_code", [])
     t_maxs = daily.get("temperature_2m_max", [])
     t_mins = daily.get("temperature_2m_min", [])
-    w_speeds = daily.get("wind_speed_10m_max", [])
-    w_dirs = daily.get("wind_direction_10m_dominant", [])
     
     for i in range(min(7, len(times))):
         try:
@@ -312,16 +511,11 @@ def render_daily(daily):
         weather_text = WMO_CODES.get(code, "未知")
         t_max = t_maxs[i] if i < len(t_maxs) else "--"
         t_min = t_mins[i] if i < len(t_mins) else "--"
-        w_speed = w_speeds[i] if i < len(w_speeds) else 0
-        w_dir = w_dirs[i] if i < len(w_dirs) else 0
-        
-        wind_text = f"{degree_to_direction(w_dir)} {kmh_to_wind_scale(w_speed)}"
         
         out += ("<tr>"
                 + "<td class='forecast-date'>" + label + "<br><span class='sub'>" + short + "</span></td>"
                 + "<td>" + weather_text + "</td>"
-                + "<td class='forecast-temp'>" + str(t_min) + "° <span class='sub'>/ " + str(t_max) + "°</span></td>"
-                + "<td class='forecast-wind'>" + wind_text + "</td>"
+                + "<td class='forecast-wind'>" + str(t_min) + "° <span class='sub'>/ " + str(t_max) + "°</span></td>"
                 + "</tr>")
     return out
 
@@ -512,12 +706,27 @@ __ERROR_BLOCK__
   </table>
 </div>
 
-<div class="kindle-section">
-  <div class="section-title">未来 7 天</div>
-  <table class="forecast-table">
-    __DAILY_ROWS__
-  </table>
-</div>
+<table style="width:100%; table-layout:fixed; border-collapse:collapse; border-spacing:0; margin-bottom:20px;">
+  <tr>
+    <td style="width:49%; vertical-align:top; padding:0;">
+      <div class="kindle-section" style="margin-bottom:0;">
+        <div class="section-title">未来 7 天</div>
+        <table class="forecast-table">
+          __DAILY_ROWS__
+        </table>
+      </div>
+    </td>
+    <td style="width:2%;"></td>
+    <td style="width:49%; vertical-align:top; padding:0;">
+      <div class="kindle-section" style="margin-bottom:0;">
+        <div class="section-title">飞牛 OS 运行状态</div>
+        <table class="forecast-table">
+          __FN_ROWS__
+        </table>
+      </div>
+    </td>
+  </tr>
+</table>
 
 <div class="kindle-section">
   <div class="section-title">系统状态 (PVE & 虚拟机) - 秒级实时</div>
@@ -545,6 +754,7 @@ def render_page():
         s_daily = state["daily"]
         s_air = state["air"]
         pve_rows = state["pve_rows"]
+        fn_rows = state["fn_rows"]
         wifi_2g = state["wifi_2g"]
         wifi_5g = state["wifi_5g"]
         s_updated = state["updated"] or "未获取"
@@ -571,7 +781,7 @@ def render_page():
         aqi = "--"
         aqi_cat = ""
 
-    daily_rows = render_daily(s_daily) if s_daily else "<tr><td colspan='4'>预报数据未加载</td></tr>"
+    daily_rows = render_daily(s_daily) if s_daily else "<tr><td colspan='3'>预报数据未加载</td></tr>"
     err_block = ""
     if s_error:
         err_block = '<div class="err">数据异常：' + s_error + "</div>"
@@ -588,6 +798,7 @@ def render_page():
         .replace("__AQI__", str(aqi))
         .replace("__AQI_CAT__", str(aqi_cat))
         .replace("__DAILY_ROWS__", daily_rows)
+        .replace("__FN_ROWS__", fn_rows)
         .replace("__PVE_ROWS__", pve_rows)
         .replace("__WIFI_2G__", str(wifi_2g))
         .replace("__WIFI_5G__", str(wifi_5g))
