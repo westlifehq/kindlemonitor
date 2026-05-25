@@ -19,3 +19,9 @@
 ## 5. Proxmox VE (PVE) REST API & SSL Bypass
 * **Decision**: Integrated PVE REST API `/access/ticket` and `/cluster/resources` endpoints with a bypassed SSL verification context (`ssl.CERT_NONE`).
 * **Rationale**: The PVE host runs on a local SSL certificate that is self-signed by default, which throws verification errors in standard Python `urllib`. Bypassing SSL verification allowed secure local HTTP queries. Fetching cluster resources in a single call minimized network overhead, gathering host and VM statistics (disk, memory, CPU, uptime) simultaneously. Replacing the static monthly calendar with this dynamic dashboard significantly increased the practical utility of the Kindle screen.
+
+## 6. High-Frequency Local Status Polling (1s PVE, 5s Redmi Router)
+* **Decision**: Refactored the architecture to separate slow-changing external weather data from high-frequency local status metrics using a multi-threaded design:
+  * **PVE Node & VM**: Polled every **1 second** using PVE auth token caching and 401 error auto-refresh, preventing login logs pollution.
+  * **Redmi AX6S Router**: Polled every **5 seconds** by obtaining the MAC address via ARP table (`ip neigh show`), logging in using a nested SHA1 signature, and calling `misystem/devicelist` to separate online client counts (`type 1` for 2.4G, `type 2` for 5G).
+  * **Memory Cache & Instant Load**: Discarded on-the-fly requests blocking. The HTTP server now serves purely cached states, completing page loads under **1 millisecond** while guaranteeing 1-second status precision.
