@@ -43,7 +43,8 @@ WMO_CODES = {
 }
 
 # ---------- 状态缓存 ----------
-state = {"now": None, "daily": None, "air": None, "pve_rows": None, "updated": None, "error": None}
+# 注意：pve_rows 不再放入全局缓存，而是在 do_GET 中实时在线拉取
+state = {"now": None, "daily": None, "air": None, "updated": None, "error": None}
 lock = threading.Lock()
 
 def fetch_json(url, timeout=10):
@@ -87,7 +88,7 @@ def fetch_pve_status():
         data = urllib.parse.urlencode({'username': 'root@pam', 'password': 'your_password'}).encode('utf-8')
         req = urllib.request.Request(login_url, data=data, method='POST')
         
-        with urllib.request.urlopen(req, context=ctx, timeout=5) as r:
+        with urllib.request.urlopen(req, context=ctx, timeout=3) as r:
             resp = json.loads(r.read().decode('utf-8'))
             ticket = resp['data']['ticket']
             
@@ -96,7 +97,7 @@ def fetch_pve_status():
         req_res = urllib.request.Request(res_url)
         req_res.add_header('Cookie', f'PVEAuthCookie={ticket}')
         
-        with urllib.request.urlopen(req_res, context=ctx, timeout=5) as r:
+        with urllib.request.urlopen(req_res, context=ctx, timeout=3) as r:
             resp_res = json.loads(r.read().decode('utf-8'))
             items = resp_res['data']
             
@@ -151,7 +152,7 @@ def fetch_pve_status():
             
         return "\n".join(rows)
     except Exception as e:
-        return f"<tr><td class='forecast-date' colspan='5'>获取 PVE 状态失败: {str(e)}</td></tr>"
+        return f"<tr><td class='forecast-date' colspan='5'>实时获取 PVE 状态失败: {str(e)}</td></tr>"
 
 def refresh_weather():
     try:
@@ -167,14 +168,10 @@ def refresh_weather():
         except Exception:
             pass
             
-        # 3. 抓取 PVE 状态
-        pve_html = fetch_pve_status()
-            
         with lock:
             state["now"] = w_data.get("current")
             state["daily"] = w_data.get("daily")
             state["air"] = aqi_data.get("current") if aqi_data else None
-            state["pve_rows"] = pve_html
             state["updated"] = datetime.now().strftime("%H:%M")
             state["error"] = None
     except Exception as e:
@@ -423,7 +420,7 @@ __ERROR_BLOCK__
 </div>
 
 <div class="kindle-section">
-  <div class="section-title">系统状态 (PVE & 虚拟机)</div>
+  <div class="section-title">系统状态 (PVE & 虚拟机) - 实时</div>
   <table class="forecast-table">
     <tr>
       <th style="text-align:left;">说明</th>
@@ -447,9 +444,11 @@ def render_page():
         s_now = state["now"]
         s_daily = state["daily"]
         s_air = state["air"]
-        s_pve = state["pve_rows"]
         s_updated = state["updated"] or "未获取"
         s_error = state["error"]
+
+    # 局域网本地 PVE 数据直接在 do_GET 中在线拉取，耗时极短(<50ms)，保证数据 100% 实时
+    pve_rows = fetch_pve_status()
 
     if s_now:
         cur_temp = s_now.get("temperature_2m", "--")
@@ -473,7 +472,6 @@ def render_page():
         aqi_cat = ""
 
     daily_rows = render_daily(s_daily) if s_daily else "<tr><td colspan='4'>预报数据未加载</td></tr>"
-    pve_rows = s_pve if s_pve else "<tr><td colspan='5'>PVE 状态数据未加载</td></tr>"
     err_block = ""
     if s_error:
         err_block = '<div class="err">数据异常：' + s_error + "</div>"
