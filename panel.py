@@ -11,6 +11,24 @@ import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+# ---------- 加载 .env 环境变量 ----------
+def load_env(env_path=".env"):
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ[k.strip()] = v.strip().strip('"').strip("'")
+        except Exception:
+            pass
+
+load_env("/vol1/@appdata/kindle-panel/.env")
+load_env(".env")
+
 # Force IPv4 only to bypass broken IPv6 DNS timeouts
 import socket
 orig_getaddrinfo = socket.getaddrinfo
@@ -98,16 +116,20 @@ def fetch_pve_status():
     
     try:
         # 1. 登录 PVE 获取 ticket (如已缓存则跳过)
+        pve_host = os.environ.get("PVE_HOST", "192.168.31.200")
+        pve_user = os.environ.get("PVE_USER", "root@pam")
+        pve_pass = os.environ.get("PVE_PASSWORD", "your_pve_password")
+        
         if not pve_ticket:
-            login_url = "https://192.168.31.200:8006/api2/json/access/ticket"
-            data = urllib.parse.urlencode({'username': 'root@pam', 'password': 'your_password'}).encode('utf-8')
+            login_url = f"https://{pve_host}:8006/api2/json/access/ticket"
+            data = urllib.parse.urlencode({'username': pve_user, 'password': pve_pass}).encode('utf-8')
             req = urllib.request.Request(login_url, data=data, method='POST')
             with urllib.request.urlopen(req, context=ctx, timeout=3) as r:
                 resp = json.loads(r.read().decode('utf-8'))
                 pve_ticket = resp['data']['ticket']
                 
         # 2. 获取资源列表
-        res_url = "https://192.168.31.200:8006/api2/json/cluster/resources"
+        res_url = f"https://{pve_host}:8006/api2/json/cluster/resources"
         req_res = urllib.request.Request(res_url)
         req_res.add_header('Cookie', f'PVEAuthCookie={pve_ticket}')
         
@@ -179,8 +201,9 @@ def fetch_pve_status():
 
 def fetch_router_status():
     global router_stok
-    mac = "YOUR_ROUTER_MAC"
-    password = "YOUR_ROUTER_PASSWORD"
+    router_host = os.environ.get("ROUTER_HOST", "192.168.31.1")
+    mac = os.environ.get("ROUTER_MAC", "your_router_mac")
+    password = os.environ.get("ROUTER_PASSWORD", "your_router_password")
     key = "a2ffa5c9be07488bbb04a3a47d3c5f6a"
     
     try:
@@ -194,7 +217,7 @@ def fetch_router_status():
             nonce = f"0_{mac}_{int(time.time())}_{random.randint(0, 10000)}"
             pwd_hash = sha1(nonce + sha1(password + key))
             
-            login_url = "http://192.168.31.1/cgi-bin/luci/api/xqsystem/login"
+            login_url = f"http://{router_host}/cgi-bin/luci/api/xqsystem/login"
             data = urllib.parse.urlencode({
                 "username": "admin",
                 "password": pwd_hash,
