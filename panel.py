@@ -449,8 +449,8 @@ def fetch_fnos_status_html():
     for label, val in metrics:
         rows.append(
             f"<tr>"
-            f"<td class='forecast-date'>{label}</td>"
-            f"<td class='forecast-wind'>{val}</td>"
+            f"<td class='forecast-date' style='width:35%; white-space:nowrap;'>{label}</td>"
+            f"<td class='forecast-wind' style='width:65%; white-space:nowrap;'>{val}</td>"
             f"</tr>"
         )
     return "\n".join(rows)
@@ -667,6 +667,7 @@ HTML = """<!doctype html>
       font-size: 18px;
       font-weight: bold;
       text-align: left !important;
+      white-space: nowrap;
     }
     .forecast-date .sub {
       font-size: 12px;
@@ -685,6 +686,7 @@ HTML = """<!doctype html>
     }
     .forecast-wind {
       text-align: right !important;
+      white-space: nowrap;
     }
     
     .foot {
