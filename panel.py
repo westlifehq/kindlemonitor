@@ -536,9 +536,9 @@ def render_daily(daily):
         t_min = t_mins[i] if i < len(t_mins) else "--"
         
         out += ("<tr>"
-                + "<td class='forecast-date'>" + label + "<br><span class='sub'>" + short + "</span></td>"
-                + "<td>" + weather_text + "</td>"
-                + "<td class='forecast-wind'>" + str(t_min) + "° <span class='sub'>/ " + str(t_max) + "°</span></td>"
+                + "<td class='forecast-date' style='width:30%;'>" + label + "<br><span class='sub'>" + short + "</span></td>"
+                + "<td style='width:25%;'>" + weather_text + "</td>"
+                + "<td class='forecast-temp' style='width:45%;'>" + str(t_min) + "° <span class='sub'>/ " + str(t_max) + "°</span></td>"
                 + "</tr>")
     return out
 
@@ -650,7 +650,7 @@ HTML = """<!doctype html>
     }
     .forecast-table th, .forecast-table td {
       border-bottom: 2px solid #000000;
-      padding: 10px 16px;
+      padding: 10px 6px;
       font-size: 16px;
       text-align: center;
       vertical-align: middle;
@@ -674,11 +674,13 @@ HTML = """<!doctype html>
       color: #333333;
     }
     .forecast-temp {
-      font-size: 18px;
+      font-size: 16px;
       font-weight: bold;
+      white-space: nowrap;
+      text-align: right !important;
     }
     .forecast-temp .sub {
-      font-size: 16px;
+      font-size: 14px;
       font-weight: normal;
     }
     .forecast-wind {
