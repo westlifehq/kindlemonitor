@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Kindle 面板 v1 · 天气与 PVE 状态版 · 标准库 only (Open-Meteo 免 Key 极简版)
+# Kindle 面板 v1 · 天气/PVE/路由器极速自适应版 · 标准库 only
 import os
 import json
 import time
@@ -22,11 +22,10 @@ socket.getaddrinfo = getaddrinfo_ipv4
 LATITUDE = "31.86"
 LONGITUDE = "117.28"
 PORT = int(os.environ.get("PORT", "8088"))
-REFRESH = int(os.environ.get("WEATHER_REFRESH_SECONDS", "1800"))
+WEATHER_REFRESH = int(os.environ.get("WEATHER_REFRESH_SECONDS", "1800"))
 
 WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
 
-# WMO 气象代码对照表 (中文翻译)
 WMO_CODES = {
     0: "晴",
     1: "晴", 2: "多云", 3: "阴",
@@ -43,8 +42,17 @@ WMO_CODES = {
 }
 
 # ---------- 状态缓存 ----------
-# 注意：pve_rows 不再放入全局缓存，而是在 do_GET 中实时在线拉取
-state = {"now": None, "daily": None, "air": None, "updated": None, "error": None}
+# 全局共享状态，带线程安全锁保护
+state = {
+    "now": None, 
+    "daily": None, 
+    "air": None, 
+    "pve_rows": "<tr><td colspan='5'>正在获取系统状态...</td></tr>", 
+    "wifi_2g": "--",
+    "wifi_5g": "--",
+    "updated": "未获取", 
+    "error": None
+}
 lock = threading.Lock()
 
 def fetch_json(url, timeout=10):
@@ -77,29 +85,41 @@ def get_aqi_category(aqi):
     elif aqi <= 300: return "重度污染"
     else: return "严重污染"
 
+# ---------- 局域网服务接口 (PVE & 路由器) ----------
+pve_ticket = None
+router_stok = None
+
 def fetch_pve_status():
+    global pve_ticket
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     
     try:
-        # 1. 登录 PVE 获取 ticket
-        login_url = "https://192.168.31.200:8006/api2/json/access/ticket"
-        data = urllib.parse.urlencode({'username': 'root@pam', 'password': 'your_password'}).encode('utf-8')
-        req = urllib.request.Request(login_url, data=data, method='POST')
-        
-        with urllib.request.urlopen(req, context=ctx, timeout=3) as r:
-            resp = json.loads(r.read().decode('utf-8'))
-            ticket = resp['data']['ticket']
-            
+        # 1. 登录 PVE 获取 ticket (如已缓存则跳过)
+        if not pve_ticket:
+            login_url = "https://192.168.31.200:8006/api2/json/access/ticket"
+            data = urllib.parse.urlencode({'username': 'root@pam', 'password': 'your_password'}).encode('utf-8')
+            req = urllib.request.Request(login_url, data=data, method='POST')
+            with urllib.request.urlopen(req, context=ctx, timeout=3) as r:
+                resp = json.loads(r.read().decode('utf-8'))
+                pve_ticket = resp['data']['ticket']
+                
         # 2. 获取资源列表
         res_url = "https://192.168.31.200:8006/api2/json/cluster/resources"
         req_res = urllib.request.Request(res_url)
-        req_res.add_header('Cookie', f'PVEAuthCookie={ticket}')
+        req_res.add_header('Cookie', f'PVEAuthCookie={pve_ticket}')
         
-        with urllib.request.urlopen(req_res, context=ctx, timeout=3) as r:
-            resp_res = json.loads(r.read().decode('utf-8'))
-            items = resp_res['data']
+        try:
+            with urllib.request.urlopen(req_res, context=ctx, timeout=2) as r:
+                resp_res = json.loads(r.read().decode('utf-8'))
+                items = resp_res['data']
+        except urllib.error.HTTPError as he:
+            if he.code == 401:
+                # Ticket 过期，重置并重试一次
+                pve_ticket = None
+                return fetch_pve_status()
+            raise he
             
         # 3. 格式化为 HTML
         rows = []
@@ -152,36 +172,116 @@ def fetch_pve_status():
             
         return "\n".join(rows)
     except Exception as e:
-        return f"<tr><td class='forecast-date' colspan='5'>实时获取 PVE 状态失败: {str(e)}</td></tr>"
+        # 清除 ticket 确保下次重试
+        pve_ticket = None
+        return f"<tr><td class='forecast-date' colspan='5'>获取 PVE 状态失败: {str(e)}</td></tr>"
 
-def refresh_weather():
+def fetch_router_status():
+    global router_stok
+    mac = "YOUR_ROUTER_MAC"
+    password = "YOUR_ROUTER_PASSWORD"
+    key = "a2ffa5c9be07488bbb04a3a47d3c5f6a"
+    
     try:
-        # 1. 抓取实时天气与7天预报
-        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_direction_10m_dominant&timezone=Asia/Shanghai"
-        w_data = fetch_json(weather_url)
-        
-        # 2. 抓取空气质量 AQI
-        aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={LATITUDE}&longitude={LONGITUDE}&current=us_aqi&timezone=Asia/Shanghai"
-        aqi_data = None
-        try:
-            aqi_data = fetch_json(aqi_url)
-        except Exception:
-            pass
+        # 1. 登录路由器 (若无 stok 则请求)
+        if not router_stok:
+            def sha1(s):
+                import hashlib
+                return hashlib.sha1(s.encode('utf-8')).hexdigest()
             
-        with lock:
-            state["now"] = w_data.get("current")
-            state["daily"] = w_data.get("daily")
-            state["air"] = aqi_data.get("current") if aqi_data else None
-            state["updated"] = datetime.now().strftime("%H:%M")
-            state["error"] = None
-    except Exception as e:
-        with lock:
-            state["error"] = "获取数据失败：" + str(e)
+            import random
+            nonce = f"0_{mac}_{int(time.time())}_{random.randint(0, 10000)}"
+            pwd_hash = sha1(nonce + sha1(password + key))
+            
+            login_url = "http://192.168.31.1/cgi-bin/luci/api/xqsystem/login"
+            data = urllib.parse.urlencode({
+                "username": "admin",
+                "password": pwd_hash,
+                "nonce": nonce,
+                "logtype": "2"
+            }).encode('utf-8')
+            
+            req = urllib.request.Request(login_url, data=data, method='POST')
+            with urllib.request.urlopen(req, timeout=3) as r:
+                resp = json.loads(r.read().decode('utf-8'))
+                if resp.get('code') == 0:
+                    router_stok = resp.get('token')
+                else:
+                    return {"2g": "--", "5g": "--"}
+                    
+        # 2. 请求设备连接列表
+        url = f"http://192.168.31.1/cgi-bin/luci/;stok={router_stok}/api/misystem/devicelist"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read().decode('utf-8'))
+            if data.get('code') != 0:
+                # Token 失效，重置并重试一次
+                router_stok = None
+                return fetch_router_status()
+                
+            count_2g = 0
+            count_5g = 0
+            for dev in data.get('list', []):
+                if dev.get('online') == 1:
+                    t = dev.get('type')
+                    if t == 1:
+                        count_2g += 1
+                    elif t == 2:
+                        count_5g += 1
+            return {"2g": str(count_2g), "5g": str(count_5g)}
+    except Exception:
+        router_stok = None
+        return {"2g": "--", "5g": "--"}
 
-def refresh_loop():
+# ---------- 定时轮询线程 ----------
+def weather_refresh_loop():
     while True:
-        refresh_weather()
-        time.sleep(REFRESH)
+        try:
+            # 1. 抓取外部天气
+            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_direction_10m_dominant&timezone=Asia/Shanghai"
+            w_data = fetch_json(weather_url)
+            
+            # 2. 抓取外网空气质量
+            aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={LATITUDE}&longitude={LONGITUDE}&current=us_aqi&timezone=Asia/Shanghai"
+            aqi_data = None
+            try:
+                aqi_data = fetch_json(aqi_url)
+            except Exception:
+                pass
+                
+            with lock:
+                state["now"] = w_data.get("current")
+                state["daily"] = w_data.get("daily")
+                state["air"] = aqi_data.get("current") if aqi_data else None
+                state["updated"] = datetime.now().strftime("%H:%M")
+                state["error"] = None
+        except Exception as e:
+            with lock:
+                state["error"] = "获取外网天气数据失败：" + str(e)
+        time.sleep(WEATHER_REFRESH)
+
+def local_status_refresh_loop():
+    pve_counter = 0
+    router_counter = 0
+    while True:
+        # PVE 状态：每 1 秒在后台抓取更新一次
+        if pve_counter >= 1:
+            pve_html = fetch_pve_status()
+            with lock:
+                state["pve_rows"] = pve_html
+            pve_counter = 0
+            
+        # 路由器设备数量：每 5 秒在后台抓取更新一次
+        if router_counter >= 5:
+            r_data = fetch_router_status()
+            with lock:
+                state["wifi_2g"] = r_data.get("2g", "--")
+                state["wifi_5g"] = r_data.get("5g", "--")
+            router_counter = 0
+            
+        time.sleep(1)
+        pve_counter += 1
+        router_counter += 1
 
 def render_daily(daily):
     if not daily:
@@ -391,7 +491,7 @@ HTML = """<!doctype html>
   <tr>
     <td>
       <div class="header-date">__DATE__</div>
-      <div class="header-sub">__WEEKDAY__ · 合肥包河</div>
+      <div class="header-sub">__WEEKDAY__ · 合肥包河 · 📶 2.4G: __WIFI_2G__台 / 5G: __WIFI_5G__台</div>
     </td>
     <td class="header-time">__TIME__</td>
   </tr>
@@ -420,7 +520,7 @@ __ERROR_BLOCK__
 </div>
 
 <div class="kindle-section">
-  <div class="section-title">系统状态 (PVE & 虚拟机) - 实时</div>
+  <div class="section-title">系统状态 (PVE & 虚拟机) - 秒级实时</div>
   <table class="forecast-table">
     <tr>
       <th style="text-align:left;">说明</th>
@@ -433,7 +533,7 @@ __ERROR_BLOCK__
   </table>
 </div>
 
-<div class="foot">数据更新 __UPDATED__ · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo & PVE</div>
+<div class="foot">数据更新 __UPDATED__ · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo & PVE & MiWiFi</div>
 </body>
 </html>"""
 
@@ -444,11 +544,11 @@ def render_page():
         s_now = state["now"]
         s_daily = state["daily"]
         s_air = state["air"]
+        pve_rows = state["pve_rows"]
+        wifi_2g = state["wifi_2g"]
+        wifi_5g = state["wifi_5g"]
         s_updated = state["updated"] or "未获取"
         s_error = state["error"]
-
-    # 局域网本地 PVE 数据直接在 do_GET 中在线拉取，耗时极短(<50ms)，保证数据 100% 实时
-    pve_rows = fetch_pve_status()
 
     if s_now:
         cur_temp = s_now.get("temperature_2m", "--")
@@ -489,6 +589,8 @@ def render_page():
         .replace("__AQI_CAT__", str(aqi_cat))
         .replace("__DAILY_ROWS__", daily_rows)
         .replace("__PVE_ROWS__", pve_rows)
+        .replace("__WIFI_2G__", str(wifi_2g))
+        .replace("__WIFI_5G__", str(wifi_5g))
         .replace("__UPDATED__", s_updated)
         .replace("__ERROR_BLOCK__", err_block))
     return html
@@ -498,6 +600,7 @@ class Handler(BaseHTTPRequestHandler):
         body = render_page().encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.header_time = None
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
@@ -506,7 +609,13 @@ class Handler(BaseHTTPRequestHandler):
         print(self.address_string(), self.command, self.path)
 
 if __name__ == "__main__":
-    t = threading.Thread(target=refresh_loop, daemon=True)
-    t.start()
+    # 开启外网天气轮询线程 (30 分钟刷新一次)
+    t_weather = threading.Thread(target=weather_refresh_loop, daemon=True)
+    t_weather.start()
+    
+    # 开启局域网高频状态轮询线程 (PVE 每 1 秒, 路由器每 5 秒)
+    t_local = threading.Thread(target=local_status_refresh_loop, daemon=True)
+    t_local.start()
+    
     print("Kindle 面板 v1 启动：http://0.0.0.0:" + str(PORT) + "/")
     HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
