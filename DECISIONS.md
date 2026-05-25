@@ -31,3 +31,9 @@
   * **Direct ProcFS Access**: Read `/proc/uptime`, `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, and `/proc/diskstats` directly in the 1-second local thread to calculate uptime, CPU usage, RAM size, I/O rates, and interface speed without calling external commands (e.g. `top`, `free`, `iostat`).
   * **Symmetric Height Aligning**: Narrowed the weather forecast to 50% width and placed it side-by-side with the FlyOS performance card. To eliminate typical browser vertical alignment glitches, we designed both panels to render exactly **7 rows of data**, creating a perfect, balanced, E-ink aesthetic look.
 
+## 8. Lightweight AJAX Auto-Refresh & Git History Secrets Scrubbing
+* **Decision**: Implemented zero-dependency `XMLHttpRequest` polling on frontend, `/api/status` endpoint on backend, and decoupling of active passwords into a `.gitignore` ignored `.env` file, followed by a full git commits history rewrite:
+  * **No-Flash Local Refreshes**: Old Kindle web browsers trigger highly annoying full-screen black flashes during page reloads. We bypassed this by writing a native JS AJAX script that queries a cached JSON `/api/status` endpoint every **2 seconds**, replacing DOM elements (time, device client count, VM stats, hardware speeds) in-place with no full page flicker.
+  * **Git Scrubbing for Repository Security**: To protect the user's local network privacy, we migrated PVE user/passwords and router hashes to a local, untracked `.env` file. We then successfully ran a `git filter-branch` command to rewrite all 12 historical commits, replacing every plaintext trace of credentials with dummy placeholders, ensuring robust safety on the public GitHub project.
+
+
