@@ -684,10 +684,10 @@ HTML = """<!doctype html>
 <table class="header-table">
   <tr>
     <td>
-      <div class="header-date">__DATE__</div>
-      <div class="header-sub">__WEEKDAY__ · 合肥包河 · 📶 2.4G: __WIFI_2G__台 / 5G: __WIFI_5G__台</div>
+      <div class="header-date" id="header-date">__DATE__</div>
+      <div class="header-sub" id="header-sub">__WEEKDAY__ · 合肥包河 · 📶 2.4G: __WIFI_2G__台 / 5G: __WIFI_5G__台</div>
     </td>
-    <td class="header-time">__TIME__</td>
+    <td class="header-time" id="header-time">__TIME__</td>
   </tr>
 </table>
 
@@ -720,7 +720,7 @@ __ERROR_BLOCK__
     <td style="width:49%; vertical-align:top; padding:0;">
       <div class="kindle-section" style="margin-bottom:0;">
         <div class="section-title">飞牛 OS 运行状态</div>
-        <table class="forecast-table">
+        <table class="forecast-table" id="fn-table-body">
           __FN_ROWS__
         </table>
       </div>
@@ -731,18 +731,44 @@ __ERROR_BLOCK__
 <div class="kindle-section">
   <div class="section-title">系统状态 (PVE & 虚拟机) - 秒级实时</div>
   <table class="forecast-table">
-    <tr>
-      <th style="text-align:left;">说明</th>
-      <th>磁盘使用率</th>
-      <th>内存使用率</th>
-      <th>CPU 利用率</th>
-      <th style="text-align:right;">运行时间</th>
-    </tr>
-    __PVE_ROWS__
+    <thead>
+      <tr>
+        <th style="text-align:left;">说明</th>
+        <th>磁盘使用率</th>
+        <th>内存使用率</th>
+        <th>CPU 利用率</th>
+        <th style="text-align:right;">运行时间</th>
+      </tr>
+    </thead>
+    <tbody id="pve-rows-container">
+      __PVE_ROWS__
+    </tbody>
   </table>
 </div>
 
-<div class="foot">数据更新 __UPDATED__ · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo & PVE & MiWiFi</div>
+<div class="foot">数据更新 <span id="updated-time">__UPDATED__</span> · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo & PVE & MiWiFi</div>
+
+<script>
+  function updateStatus() {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/api/status", true);
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState === 4 && xhr.status === 200) {
+        try {
+          var data = JSON.parse(xhr.responseText);
+          document.getElementById("header-time").innerHTML = data.time;
+          document.getElementById("header-date").innerHTML = data.date;
+          document.getElementById("header-sub").innerHTML = data.weekday + " · 合肥包河 · 📶 2.4G: " + data.wifi_2g + "台 / 5G: " + data.wifi_5g + "台";
+          document.getElementById("fn-table-body").innerHTML = data.fn_rows;
+          document.getElementById("pve-rows-container").innerHTML = data.pve_rows;
+          document.getElementById("updated-time").innerHTML = data.updated;
+        } catch(e) {}
+      }
+    };
+    xhr.send();
+  }
+  setInterval(updateStatus, 2000);
+</script>
 </body>
 </html>"""
 
@@ -808,12 +834,40 @@ def render_page():
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/api/status":
+            now_dt = datetime.now()
+            weekday_cn = WEEKDAY_CN[now_dt.weekday()]
+            with lock:
+                pve_rows = state["pve_rows"]
+                fn_rows = state["fn_rows"]
+                wifi_2g = state["wifi_2g"]
+                wifi_5g = state["wifi_5g"]
+                s_updated = state["updated"] or "未获取"
+            
+            data = {
+                "time": now_dt.strftime("%H:%M"),
+                "date": now_dt.strftime("%Y年%m月%d日"),
+                "weekday": "星期" + weekday_cn,
+                "wifi_2g": str(wifi_2g),
+                "wifi_5g": str(wifi_5g),
+                "fn_rows": fn_rows,
+                "pve_rows": pve_rows,
+                "updated": s_updated
+            }
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         body = render_page().encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.header_time = None
-        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
     def log_message(self, fmt, *args):
