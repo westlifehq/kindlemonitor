@@ -1,8 +1,19 @@
-# Next Steps: Kindle Weather & Calendar Dashboard
+# Next Steps: Kindle Weather & PVE Dashboard
 
-## Phase 2 Plan (v2.0.0)
-* **Home Assistant Integration**: Pull indoor temperature, humidity, and sensor values from a local Home Assistant instance.
-* **Network Status Metrics**: Fetch WAN real-time upload/download speeds and latency measurements (ping) from the home router/J4125.
-* **Alternative Deployment (Docker)**: Build a lightweight Python Docker container to run the dashboard backend, completely isolating the host OS environment.
-* **Chinese Lunar Calendar**: Add traditional Chinese solar terms and lunar date labels to the header and calendar grids.
-* **FlyOS Host Historical Stats Graphing**: Add E-ink friendly Sparkline graphs for CPU and memory historical logs.
+## 当前版本 v1.2.0 已完成，计划 v2.0 功能：
+
+### 高优先级
+* **HA 室内温湿度接入**: 从本地 Home Assistant 实例拉取室内温度、湿度、传感器数值，追加到主机状态卡片或新增卡片。
+* **WAN 网络状态**: 实时上行/下行速率 + Ping 延迟/丢包率（从 J4125 宿主或路由器获取）。
+
+### 中优先级
+* **HA 实体在线统计**: 展示 HA 中在线设备/人员数量。
+* **农历日历头部**: 在日期头部追加农历日期和节气标注。
+* **FlyOS 历史趋势 Sparkline**: E-ink 友好的 CPU/内存历史折线图（纯 ASCII 或简单 SVG）。
+
+### 低优先级
+* **Docker 化部署**: 构建 Python Docker 容器，彻底隔离宿主 OS 环境，支持更便携的迁移。
+* **多地天气支持**: 在配置中支持多个地理位置，Kindle 上可切换查看。
+
+## v2 SOP 计划
+> v2 文档将在 HA 接入完成后单独发布，可直接复用 v1.2 的"主机状态"卡片区域。

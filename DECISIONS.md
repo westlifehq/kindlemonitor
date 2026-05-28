@@ -31,9 +31,17 @@
   * **Direct ProcFS Access**: Read `/proc/uptime`, `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, and `/proc/diskstats` directly in the 1-second local thread to calculate uptime, CPU usage, RAM size, I/O rates, and interface speed without calling external commands (e.g. `top`, `free`, `iostat`).
   * **Symmetric Height Aligning**: Narrowed the weather forecast to 50% width and placed it side-by-side with the FlyOS performance card. To eliminate typical browser vertical alignment glitches, we designed both panels to render exactly **7 rows of data**, creating a perfect, balanced, E-ink aesthetic look.
 
-## 8. Lightweight AJAX Auto-Refresh & Git History Secrets Scrubbing
-* **Decision**: Implemented zero-dependency `XMLHttpRequest` polling on frontend, `/api/status` endpoint on backend, and decoupling of active passwords into a `.gitignore` ignored `.env` file, followed by a full git commits history rewrite:
-  * **No-Flash Local Refreshes**: Old Kindle web browsers trigger highly annoying full-screen black flashes during page reloads. We bypassed this by writing a native JS AJAX script that queries a cached JSON `/api/status` endpoint every **2 seconds**, replacing DOM elements (time, device client count, VM stats, hardware speeds) in-place with no full page flicker.
-  * **Git Scrubbing for Repository Security**: To protect the user's local network privacy, we migrated PVE user/passwords and router hashes to a local, untracked `.env` file. We then successfully ran a `git filter-branch` command to rewrite all 12 historical commits, replacing every plaintext trace of credentials with dummy placeholders, ensuring robust safety on the public GitHub project.
+## 9. PVE 指标独立 exporter 服务（非 PVE API 复用）
+* **Decision**: 在 PVE 宿主机上另起一个独立的 Python HTTP exporter（`pve-metrics.service`，port 9101），而非复用原有 PVE REST API (8006) 来获取温度数据。
+* **Rationale**: PVE REST API 不暴露 `lm-sensors` CPU 核心温度和 SMART 磁盘温度。`sensors -j` 和 `smartctl -A -j` 是读取这些数据的唯一途径，必须在宿主机上以 root 权限运行，故设计独立的轻量级 HTTP 导出器，并用共享 Token 做最小化鉴权。
+
+## 10. USB 硬盘 smartctl 免密 sudo（而非 root 运行 panel.py）
+* **Decision**: 通过 `/etc/sudoers.d/kindle-panel-smartctl` 为 `smartctl` 单独授权免密执行，而非将 `kindle-panel.service` 改为 `User=root`。
+* **Rationale**: USB 盘已直通给飞牛 VM，PVE 无法读取其温度，必须在飞牛侧调用 `smartctl`。最小权限原则：只向 `smartctl` 单独开放 `NOPASSWD`，不提升 panel.py 进程的整体特权，降低安全风险。
+
+## 11. 硬件温度 1s 刷新 + AJAX 锁外渲染
+* **Decision**: 硬件温度后端采集间隔设为 1s（`HW_REFRESH_SECONDS=1`），前端 AJAX 定时器同步缩短至 1000ms；`render_hw_rows()` 在 `/api/status` 的 `with lock:` 代码块外部调用。
+* **Rationale**: CPU/硬盘温度变化相对缓慢，但用户希望尽快看到响应；1s 间隔在 J4125 上 `smartctl` 开销约 50ms，PVE HTTP 请求约 5ms，整体 CPU 占用可接受。锁外渲染是因为 `render_hw_rows()` 内部已自带 `with lock:`，若在外层 lock 内再调用则触发 Python 非重入 `threading.Lock` 死锁。
+
 
 
