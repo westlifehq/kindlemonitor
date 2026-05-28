@@ -7,6 +7,7 @@ import ssl
 import calendar
 import threading
 import urllib.request
+import subprocess
 import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -41,6 +42,10 @@ LATITUDE = "31.86"
 LONGITUDE = "117.28"
 PORT = int(os.environ.get("PORT", "8088"))
 WEATHER_REFRESH = int(os.environ.get("WEATHER_REFRESH_SECONDS", "1800"))
+PVE_METRICS_URL = os.environ.get("PVE_METRICS_URL", "").strip()
+PVE_METRICS_TOKEN = os.environ.get("PVE_METRICS_TOKEN", "").strip()
+USB_DISKS = [d.strip() for d in os.environ.get("USB_DISKS", "").split(",") if d.strip()]
+HW_REFRESH = int(os.environ.get("HW_REFRESH_SECONDS", "60"))
 
 WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
 
@@ -70,7 +75,10 @@ state = {
     "wifi_2g": "--",
     "wifi_5g": "--",
     "updated": "未获取", 
-    "error": None
+    "error": None,
+    "hw": None,
+    "hw_updated": None,
+    "hw_error": None
 }
 lock = threading.Lock()
 
@@ -507,6 +515,51 @@ def local_status_refresh_loop():
         pve_counter += 1
         router_counter += 1
 
+def fetch_pve_metrics():
+    if not PVE_METRICS_URL:
+        return None
+    req = urllib.request.Request(PVE_METRICS_URL)
+    if PVE_METRICS_TOKEN:
+        req.add_header("X-Auth-Token", PVE_METRICS_TOKEN)
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+def read_local_usb_disks():
+    out = []
+    for dev in USB_DISKS:
+        try:
+            p = subprocess.run(
+                ["sudo", "-n", "smartctl", "-A", "-j", "-d", "sat", dev],
+                capture_output=True, timeout=10
+            )
+            data = json.loads(p.stdout.decode("utf-8") or "{}")
+            t = (data.get("temperature") or {}).get("current")
+            out.append({"device": dev, "temp": t, "model": data.get("model_name")})
+        except Exception as e:
+            out.append({"device": dev, "error": str(e)[:80]})
+    return out
+
+def refresh_hardware():
+    pve = None
+    err = None
+    try:
+        pve = fetch_pve_metrics()
+    except Exception as e:
+        err = "PVE: " + str(e)[:80]
+    usb = read_local_usb_disks()
+    with lock:
+        state["hw"] = {"pve": pve, "usb": usb}
+        state["hw_updated"] = datetime.now().strftime("%H:%M")
+        state["hw_error"] = err
+
+def refresh_hw_loop():
+    while True:
+        try:
+            refresh_hardware()
+        except Exception:
+            pass
+        time.sleep(HW_REFRESH)
+
 def render_daily(daily):
     if not daily:
         return "<tr><td colspan='3'>暂无预报数据</td></tr>"
@@ -541,6 +594,46 @@ def render_daily(daily):
                 + "<td class='forecast-temp' style='width:45%;'>" + str(t_min) + "° <span class='sub'>/ " + str(t_max) + "°</span></td>"
                 + "</tr>")
     return out
+
+def render_hw_rows():
+    with lock:
+        hw = state["hw"]
+        hw_err = state["hw_error"]
+    rows = []
+    if hw_err:
+        rows.append("<tr><td colspan='3'><span class='hot'>" + hw_err + "</span></td></tr>")
+    pve = (hw or {}).get("pve") or {}
+    cpu = pve.get("cpu") or {}
+    pkg = cpu.get("package")
+    high = cpu.get("high") or 80
+    if pkg is not None:
+        cls = "hot" if pkg >= high - 15 else ""
+        cores = cpu.get("cores") or []
+        core_str = " / ".join(str(int(c.get("temp", 0))) + "°" for c in cores) if cores else "--"
+        rows.append("<tr><td>CPU (J4125)</td>"
+                    + "<td class='" + cls + "'>" + str(int(pkg)) + "°C</td>"
+                    + "<td><span class='sub'>核心 " + core_str + "</span></td></tr>")
+    else:
+        rows.append("<tr><td>CPU (J4125)</td><td>--</td><td><span class='sub'>PVE 未返回</span></td></tr>")
+    sd = pve.get("system_disk") or {}
+    if sd.get("temp") is not None:
+        t = sd["temp"]
+        cls = "hot" if t >= 55 else ""
+        rows.append("<tr><td>系统盘</td>"
+                    + "<td class='" + cls + "'>" + str(t) + "°C</td>"
+                    + "<td><span class='sub'>" + str(sd.get("device", "")) + " " + str(sd.get("model", "") or "") + "</span></td></tr>")
+    for u in ((hw or {}).get("usb") or []):
+        if u.get("temp") is not None:
+            t = u["temp"]
+            cls = "hot" if t >= 55 else ""
+            rows.append("<tr><td>USB 硬盘</td>"
+                        + "<td class='" + cls + "'>" + str(t) + "°C</td>"
+                        + "<td><span class='sub'>" + str(u.get("device", "")) + " " + str(u.get("model", "") or "") + "</span></td></tr>")
+        else:
+            rows.append("<tr><td>USB 硬盘</td><td>--</td><td><span class='sub'>" + str(u.get("device", "")) + " " + str(u.get("error", "") or "") + "</span></td></tr>")
+    if not rows:
+        rows.append("<tr><td colspan='3'>无数据</td></tr>")
+    return "\n".join(rows)
 
 HTML = """<!doctype html>
 <html lang="zh-CN">
@@ -706,6 +799,9 @@ HTML = """<!doctype html>
       font-size: 14px;
       font-weight: bold;
     }
+    .hw td { font-size: 13px; padding: 4px 6px; }
+    .hw .hot { background: #000; color: #fff; font-weight: bold; }
+    .hw .sub { font-size: 11px; color: #555; }
 </style>
 </head>
 <body>
@@ -746,10 +842,16 @@ __ERROR_BLOCK__
     </td>
     <td style="width:2%;"></td>
     <td style="width:49%; vertical-align:top; padding:0;">
-      <div class="kindle-section" style="margin-bottom:0;">
+      <div class="kindle-section" style="margin-bottom:12px;">
         <div class="section-title">飞牛 OS 运行状态</div>
         <table class="forecast-table" id="fn-table-body">
           __FN_ROWS__
+        </table>
+      </div>
+      <div class="kindle-section" style="margin-bottom:0;">
+        <div class="section-title">主机状态</div>
+        <table class="forecast-table hw" id="hw-table-body" style="margin-bottom:0;">
+          __HW_ROWS__
         </table>
       </div>
     </td>
@@ -774,7 +876,7 @@ __ERROR_BLOCK__
   </table>
 </div>
 
-<div class="foot">数据更新 <span id="updated-time">__UPDATED__</span> · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo & PVE & MiWiFi</div>
+<div class="foot">数据更新 <span id="updated-time">天气 __UPDATED__ · 主机 __HW_UPDATED__</span> · 页面每 5 分钟自动刷新 · 数据来源 Open-Meteo & PVE & MiWiFi</div>
 
 <script>
   function updateStatus() {
@@ -788,6 +890,7 @@ __ERROR_BLOCK__
           document.getElementById("header-date").innerHTML = data.date;
           document.getElementById("header-sub").innerHTML = data.weekday + " · 合肥包河 · 📶 2.4G: " + data.wifi_2g + "台 / 5G: " + data.wifi_5g + "台";
           document.getElementById("fn-table-body").innerHTML = data.fn_rows;
+          document.getElementById("hw-table-body").innerHTML = data.hw_rows;
           document.getElementById("pve-rows-container").innerHTML = data.pve_rows;
           document.getElementById("updated-time").innerHTML = data.updated;
         } catch(e) {}
@@ -795,7 +898,7 @@ __ERROR_BLOCK__
     };
     xhr.send();
   }
-  setInterval(updateStatus, 2000);
+  setInterval(updateStatus, 1000);
 </script>
 </body>
 </html>"""
@@ -812,6 +915,7 @@ def render_page():
         wifi_2g = state["wifi_2g"]
         wifi_5g = state["wifi_5g"]
         s_updated = state["updated"] or "未获取"
+        s_hw_updated = state["hw_updated"] or "未获取"
         s_error = state["error"]
 
     if s_now:
@@ -836,6 +940,7 @@ def render_page():
         aqi_cat = ""
 
     daily_rows = render_daily(s_daily) if s_daily else "<tr><td colspan='3'>预报数据未加载</td></tr>"
+    hw_rows = render_hw_rows()
     err_block = ""
     if s_error:
         err_block = '<div class="err">数据异常：' + s_error + "</div>"
@@ -852,11 +957,13 @@ def render_page():
         .replace("__AQI__", str(aqi))
         .replace("__AQI_CAT__", str(aqi_cat))
         .replace("__DAILY_ROWS__", daily_rows)
+        .replace("__HW_ROWS__", hw_rows)
         .replace("__FN_ROWS__", fn_rows)
         .replace("__PVE_ROWS__", pve_rows)
         .replace("__WIFI_2G__", str(wifi_2g))
         .replace("__WIFI_5G__", str(wifi_5g))
         .replace("__UPDATED__", s_updated)
+        .replace("__HW_UPDATED__", s_hw_updated)
         .replace("__ERROR_BLOCK__", err_block))
     return html
 
@@ -865,12 +972,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/status":
             now_dt = datetime.now()
             weekday_cn = WEEKDAY_CN[now_dt.weekday()]
+            hw_rows = render_hw_rows()
             with lock:
                 pve_rows = state["pve_rows"]
                 fn_rows = state["fn_rows"]
                 wifi_2g = state["wifi_2g"]
                 wifi_5g = state["wifi_5g"]
                 s_updated = state["updated"] or "未获取"
+                s_hw_updated = state["hw_updated"] or "未获取"
             
             data = {
                 "time": now_dt.strftime("%H:%M"),
@@ -879,8 +988,9 @@ class Handler(BaseHTTPRequestHandler):
                 "wifi_2g": str(wifi_2g),
                 "wifi_5g": str(wifi_5g),
                 "fn_rows": fn_rows,
+                "hw_rows": hw_rows,
                 "pve_rows": pve_rows,
-                "updated": s_updated
+                "updated": f"天气 {s_updated} · 主机 {s_hw_updated}"
             }
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
@@ -909,6 +1019,10 @@ if __name__ == "__main__":
     # 开启局域网高频状态轮询线程 (PVE 每 1 秒, 路由器每 5 秒)
     t_local = threading.Thread(target=local_status_refresh_loop, daemon=True)
     t_local.start()
+    
+    # 开启硬件温度状态轮询线程 (PVE & 本地 USB 盘每 60 秒刷新)
+    t_hw = threading.Thread(target=refresh_hw_loop, daemon=True)
+    t_hw.start()
     
     print("Kindle 面板 v1 启动：http://0.0.0.0:" + str(PORT) + "/")
     HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
